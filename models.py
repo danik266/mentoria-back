@@ -68,9 +68,29 @@ class UserProfile(BaseModel):
     grade: Optional[int] = 8
     interests: Optional[List[str]] = Field(default_factory=list)
     goals: Optional[List[str]] = Field(default_factory=list)
+    telegram: Optional[str] = ""
+    email_notifications: Optional[bool] = True
+    telegram_notifications: Optional[bool] = True
+    email_certs: Optional[bool] = True
+    telegram_certs: Optional[bool] = True
+
 
 # Full User Sync Payload
 class UserSyncData(BaseModel):
     profile: Optional[UserProfile] = None
     progress: Optional[Dict[str, Dict[str, bool]]] = Field(default_factory=dict)
     saved_opportunities: Optional[List[str]] = Field(default_factory=list)
+
+
+# Authentication verification schemas
+class EmailConfirmRequest(BaseModel):
+    email: EmailStr
+    code: str
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    code: str
+    new_password: str = Field(..., min_length=6)

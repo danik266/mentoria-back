@@ -2,12 +2,100 @@ from fastapi import FastAPI, HTTPException, status, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from database import users_collection, courses_collection, opportunities_collection
-from models import UserCreate, UserLogin, UserResponse, Token, UserSyncData, Course, Opportunity
+from models import (
+    UserCreate, UserLogin, UserResponse, Token, UserSyncData, Course, Opportunity,
+    EmailConfirmRequest, ForgotPasswordRequest, ResetPasswordRequest
+)
 from auth import get_password_hash, verify_password, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM
-from datetime import timedelta
+from datetime import timedelta, datetime, date
 from bson import ObjectId
 from jose import jwt, JWTError
 from seed_data import COURSES_DATA, OPPORTUNITIES_DATA
+import asyncio
+import random
+from notifications import send_email, send_telegram
+from telegram_bot import telegram_polling_worker
+
+
+async def deadline_notifier_loop():
+    print("[Deadline Notifier] Starting background check loop...")
+    while True:
+        try:
+            # Fetch all users
+            users_cursor = users_collection.find({})
+            users = await users_cursor.to_list(length=1000)
+            
+            # Fetch all opportunities
+            opportunities_cursor = opportunities_collection.find({})
+            opportunities = await opportunities_cursor.to_list(length=1000)
+            
+            for user in users:
+                profile = user.get("profile", {})
+                email_enabled = profile.get("email_notifications", True)
+                tg_enabled = profile.get("telegram_notifications", True)
+                chat_id = user.get("telegram_chat_id")
+                
+                if not email_enabled and not (tg_enabled and chat_id):
+                    continue
+                    
+                user_interests = [i.lower() for i in profile.get("interests", [])]
+                saved_ops = user.get("saved_opportunities", [])
+                notified = user.get("notified_deadlines", [])
+                
+                for op in opportunities:
+                    op_id = op["id"]
+                    if op_id in notified:
+                        continue
+                        
+                    try:
+                        deadline_date = datetime.strptime(op["deadline"], "%Y-%m-%d").date()
+                        today = date.today()
+                        days_left = (deadline_date - today).days
+                    except Exception:
+                        continue
+                        
+                    # Notify if deadline is within 3 days
+                    if 0 <= days_left <= 3:
+                        op_tags = [t.lower() for t in op.get("tags", [])]
+                        is_relevant = op_id in saved_ops or any(tag in user_interests for tag in op_tags)
+                        
+                        if is_relevant:
+                            user_name = profile.get("name") or user.get("name", "Ученик")
+                            msg_text = (
+                                f"⏰ Внимание, {user_name}!\n\n"
+                                f"Приближается дедлайн по направлению «{op.get('category', 'Возможность')}»!\n"
+                                f"📌 Название: {op.get('title')}\n"
+                                f"📅 Дата дедлайна: {op.get('deadline')} (осталось дней: {days_left})\n\n"
+                                f"Не шали, давай участвуй! Ссылка на платформу: http://localhost:5173/app/opportunities"
+                            )
+                            
+                            sent_any = False
+                            if email_enabled:
+                                await send_email(
+                                    to_email=user["email"],
+                                    subject=f"Срочно: дедлайн по {op.get('title')}",
+                                    body=msg_text
+                                )
+                                sent_any = True
+                                
+                            if tg_enabled and chat_id:
+                                await send_telegram(
+                                    chat_id=chat_id,
+                                    text=msg_text
+                                )
+                                sent_any = True
+                                
+                            if sent_any:
+                                await users_collection.update_one(
+                                    {"_id": user["_id"]},
+                                    {"$addToSet": {"notified_deadlines": op_id}}
+                                )
+                                print(f"[Deadline Notifier] Notified user {user['email']} about opportunity {op_id}")
+                                
+        except Exception as e:
+            print(f"[Deadline Notifier Error] {e}")
+            
+        await asyncio.sleep(60)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -22,14 +110,15 @@ async def lifespan(app: FastAPI):
         await opportunities_collection.insert_many(OPPORTUNITIES_DATA)
         print("Seeded default opportunities in database.")
 
-    admin_user = await users_collection.find_one({"email": "admin@mentoria.kz"})
+    admin_user = await users_collection.find_one({"email": "admin@makquiz.site"})
     if not admin_user:
         hashed_password = get_password_hash("admin123")
         await users_collection.insert_one({
             "name": "Администратор",
-            "email": "admin@mentoria.kz",
+            "email": "admin@makquiz.site",
             "password": hashed_password,
             "is_admin": True,
+            "is_confirmed": True,
             "profile": {
                 "name": "Администратор",
                 "grade": 11,
@@ -39,9 +128,16 @@ async def lifespan(app: FastAPI):
             "progress": {},
             "saved_opportunities": []
         })
-        print("Seeded default admin user in database: admin@mentoria.kz / admin123")
+        print("Seeded default admin user in database: admin@makquiz.site / admin123")
+        
+    polling_task = asyncio.create_task(telegram_polling_worker())
+    notifier_task = asyncio.create_task(deadline_notifier_loop())
+    
     yield
-    # Shutdown (nothing to do)
+    
+    polling_task.cancel()
+    notifier_task.cancel()
+
 
 app = FastAPI(lifespan=lifespan)
 
@@ -72,23 +168,26 @@ async def get_current_user(authorization: str = Header(None)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
 
-@app.post("/api/auth/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+@app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
 async def register_user(user: UserCreate):
     existing_user = await users_collection.find_one({"email": user.email})
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
 
     hashed_password = get_password_hash(user.password)
-    # Check if first user or admin email to set admin role
     is_admin = False
-    if user.email in ["admin@mentoria.kz", "admin@admin.com", "admin@mentoria.com"]:
+    if user.email in ["admin@makquiz.site", "admin@admin.com", "admin@makquiz.com"]:
         is_admin = True
         
+    confirm_code = f"{random.randint(100000, 999999)}"
+    
     new_user = {
         "name": user.name,
         "email": user.email,
         "password": hashed_password,
         "is_admin": is_admin,
+        "is_confirmed": False,
+        "confirm_code": confirm_code,
         "profile": {
             "name": user.name,
             "grade": 8,
@@ -99,22 +198,140 @@ async def register_user(user: UserCreate):
         "saved_opportunities": []
     }
     
-    result = await users_collection.insert_one(new_user)
+    await users_collection.insert_one(new_user)
     
+    # Send confirmation code email
+    subject = "Код подтверждения регистрации на Makquiz Hub"
+    body = (
+        f"👋 Привет, {user.name}!\n\n"
+        f"Спасибо за регистрацию на образовательной платформе Makquiz Hub.\n"
+        f"Ваш код подтверждения почты:\n\n"
+        f"👉  {confirm_code}  👈\n\n"
+        f"Введите его на странице верификации, чтобы активировать аккаунт.\n"
+        f"Удачи в учебе!"
+    )
+    await send_email(to_email=user.email, subject=subject, body=body)
+    
+    return {
+        "status": "confirmation_required",
+        "email": user.email
+    }
+
+@app.post("/api/auth/confirm-email", response_model=Token)
+async def confirm_email(payload: EmailConfirmRequest):
+    user = await users_collection.find_one({"email": payload.email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    if user.get("is_confirmed"):
+        # If already confirmed, just log them in
+        pass
+    else:
+        saved_code = user.get("confirm_code")
+        if not saved_code or saved_code != payload.code.strip():
+            raise HTTPException(status_code=400, detail="Invalid verification code")
+            
+        await users_collection.update_one(
+            {"_id": user["_id"]},
+            {
+                "$set": {"is_confirmed": True},
+                "$unset": {"confirm_code": ""}
+            }
+        )
+        # Fetch updated user
+        user = await users_collection.find_one({"_id": user["_id"]})
+        
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+        data={"sub": user["email"]}, expires_delta=access_token_expires
     )
     
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "user": {
-            "id": str(result.inserted_id),
-            "name": user.name,
-            "email": user.email
+            "id": str(user["_id"]),
+            "name": user["name"],
+            "email": user["email"]
         }
     }
+
+@app.post("/api/auth/resend-confirmation")
+async def resend_confirmation(payload: ForgotPasswordRequest):
+    user = await users_collection.find_one({"email": payload.email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    if user.get("is_confirmed"):
+        return {"status": "already_confirmed"}
+        
+    new_code = f"{random.randint(100000, 999999)}"
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"confirm_code": new_code}}
+    )
+    
+    subject = "Новый код подтверждения — Makquiz Hub"
+    body = (
+        f"Ваш новый код подтверждения почты:\n\n"
+        f"👉  {new_code}  👈\n\n"
+        f"Введите его на сайте, чтобы активировать аккаунт."
+    )
+    await send_email(to_email=user["email"], subject=subject, body=body)
+    return {"status": "code_resent"}
+
+@app.post("/api/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest):
+    user = await users_collection.find_one({"email": payload.email})
+    # If user doesn't exist, we return a success response anyway to avoid email enumeration security issues
+    if not user:
+        return {"status": "reset_code_sent"}
+        
+    reset_code = f"{random.randint(100000, 999999)}"
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"reset_code": reset_code}}
+    )
+    
+    subject = "Код для сброса пароля — Makquiz Hub"
+    body = (
+        f"Здравствуйте!\n\n"
+        f"Мы получили запрос на сброс пароля для вашей учетной записи Makquiz Hub.\n"
+        f"Ваш одноразовый код для восстановления доступа:\n\n"
+        f"👉  {reset_code}  👈\n\n"
+        f"Если вы не запрашивали сброс пароля, проигнорируйте это письмо."
+    )
+    await send_email(to_email=user["email"], subject=subject, body=body)
+    return {"status": "reset_code_sent"}
+
+@app.post("/api/auth/reset-password")
+async def reset_password(payload: ResetPasswordRequest):
+    user = await users_collection.find_one({"email": payload.email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    saved_code = user.get("reset_code")
+    if not saved_code or saved_code != payload.code.strip():
+        raise HTTPException(status_code=400, detail="Invalid or expired reset code")
+        
+    hashed_password = get_password_hash(payload.new_password)
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": {"password": hashed_password},
+            "$unset": {"reset_code": ""}
+        }
+    )
+    
+    # Notify user that password was changed
+    subject = "Пароль успешно изменен — Makquiz Hub"
+    body = (
+        f"Уважаемый пользователь!\n\n"
+        f"Пароль для вашей учетной записи {payload.email} на Makquiz Hub был успешно изменен.\n"
+        f"Если вы этого не делали, немедленно свяжитесь с поддержкой."
+    )
+    await send_email(to_email=user["email"], subject=subject, body=body)
+    return {"status": "password_reset_success"}
 
 @app.post("/api/auth/login", response_model=Token)
 async def login_user(user: UserLogin):
@@ -125,9 +342,12 @@ async def login_user(user: UserLogin):
     if not verify_password(user.password, db_user["password"]):
         raise HTTPException(status_code=400, detail="Invalid email or password")
 
+    if not db_user.get("is_confirmed", False):
+        raise HTTPException(status_code=400, detail="Email not confirmed")
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+        data={"sub": db_user["email"]}, expires_delta=access_token_expires
     )
     
     return {
@@ -162,12 +382,14 @@ async def sync_get(user = Depends(get_current_user)):
     progress = user.get("progress", {})
     saved = user.get("saved_opportunities", [])
     
+    from telegram_bot import get_bot_username
     return {
         "courses": courses,
         "opportunities": ops,
         "profile": profile,
         "progress": progress,
-        "saved": saved
+        "saved": saved,
+        "telegram_bot_username": get_bot_username()
     }
 
 @app.post("/api/sync")
@@ -185,12 +407,76 @@ async def sync_post(data: UserSyncData, user = Depends(get_current_user)):
             {"_id": user["_id"]},
             {"$set": update_data}
         )
+        
+    # Check for newly completed courses and trigger certificate notifications
+    if data.progress is not None:
+        try:
+            courses_cursor = courses_collection.find({})
+            all_courses = await courses_cursor.to_list(length=100)
+            
+            profile = data.profile.model_dump() if data.profile is not None else user.get("profile", {})
+            # Fetch latest user document to avoid race conditions with previous sync operations
+            latest_user = await users_collection.find_one({"_id": user["_id"]})
+            completed_certs = latest_user.get("completed_certificates", [])
+            chat_id = latest_user.get("telegram_chat_id")
+            
+            for course in all_courses:
+                course_id = course["id"]
+                if course_id in completed_certs:
+                    continue
+                    
+                lessons_in_course = [l["id"] for l in course.get("lessons", [])]
+                if not lessons_in_course:
+                    continue
+                    
+                user_course_progress = data.progress.get(course_id, {})
+                completed_lessons_count = sum(1 for lid in lessons_in_course if user_course_progress.get(lid) is True)
+                
+                is_completed = completed_lessons_count == len(lessons_in_course)
+                
+                if is_completed:
+                    user_name = profile.get("name") or latest_user.get("name", "Ученик")
+                    cert_url = f"http://localhost:5173/certificate/{course_id}"
+                    
+                    msg_text = (
+                        f"🎓 Поздравляем, {user_name}!\n\n"
+                        f"Вы успешно завершили курс «{course.get('title')}»!\n"
+                        f"За ваши успехи и старания вам сгенерирован именной сертификат.\n\n"
+                        f"Посмотреть и скачать сертификат можно по ссылке:\n{cert_url}\n\n"
+                        f"Так держать! Продолжайте обучение на Makquiz Hub!"
+                    )
+                    
+                    email_enabled = profile.get("email_certs", True)
+                    tg_enabled = profile.get("telegram_certs", True)
+                    
+                    if email_enabled:
+                        await send_email(
+                            to_email=latest_user["email"],
+                            subject=f"Поздравляем с окончанием курса: {course.get('title')}!",
+                            body=msg_text
+                        )
+                        
+                    if tg_enabled and chat_id:
+                        await send_telegram(
+                            chat_id=chat_id,
+                            text=msg_text
+                        )
+                        
+                    await users_collection.update_one(
+                        {"_id": latest_user["_id"]},
+                        {"$addToSet": {"completed_certificates": course_id}}
+                    )
+                    print(f"[Certificate Trigger] Sent certificate for course {course_id} to user {latest_user['email']}")
+        except Exception as e:
+            print(f"[Certificate Trigger Error] {e}")
+            
     return {"status": "ok"}
+
 
 # Admin CRUD - Courses
 @app.post("/api/admin/courses")
 async def admin_save_course(course: Course, user = Depends(get_current_user)):
-    is_user_admin = user.get("is_admin", False) or user["email"] in ["admin@mentoria.kz", "admin@admin.com", "admin@mentoria.com"]
+    is_user_admin = user.get("is_admin", False) or user["email"] in ["admin@makquiz.site", "admin@admin.com", "admin@makquiz.com"]
     if not is_user_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         
@@ -204,7 +490,7 @@ async def admin_save_course(course: Course, user = Depends(get_current_user)):
 
 @app.delete("/api/admin/courses/{course_id}")
 async def admin_delete_course(course_id: str, user = Depends(get_current_user)):
-    is_user_admin = user.get("is_admin", False) or user["email"] in ["admin@mentoria.kz", "admin@admin.com", "admin@mentoria.com"]
+    is_user_admin = user.get("is_admin", False) or user["email"] in ["admin@makquiz.site", "admin@admin.com", "admin@makquiz.com"]
     if not is_user_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         
@@ -214,7 +500,7 @@ async def admin_delete_course(course_id: str, user = Depends(get_current_user)):
 # Admin CRUD - Opportunities
 @app.post("/api/admin/opportunities")
 async def admin_save_opportunity(op: Opportunity, user = Depends(get_current_user)):
-    is_user_admin = user.get("is_admin", False) or user["email"] in ["admin@mentoria.kz", "admin@admin.com", "admin@mentoria.com"]
+    is_user_admin = user.get("is_admin", False) or user["email"] in ["admin@makquiz.site", "admin@admin.com", "admin@makquiz.com"]
     if not is_user_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         
@@ -228,7 +514,7 @@ async def admin_save_opportunity(op: Opportunity, user = Depends(get_current_use
 
 @app.delete("/api/admin/opportunities/{op_id}")
 async def admin_delete_opportunity(op_id: str, user = Depends(get_current_user)):
-    is_user_admin = user.get("is_admin", False) or user["email"] in ["admin@mentoria.kz", "admin@admin.com", "admin@mentoria.com"]
+    is_user_admin = user.get("is_admin", False) or user["email"] in ["admin@makquiz.site", "admin@admin.com", "admin@makquiz.com"]
     if not is_user_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         
@@ -238,12 +524,12 @@ async def admin_delete_opportunity(op_id: str, user = Depends(get_current_user))
 # Admin - Student & Course Analytics
 @app.get("/api/admin/analytics")
 async def admin_analytics(user = Depends(get_current_user)):
-    is_user_admin = user.get("is_admin", False) or user["email"] in ["admin@mentoria.kz", "admin@admin.com", "admin@mentoria.com"]
+    is_user_admin = user.get("is_admin", False) or user["email"] in ["admin@makquiz.site", "admin@admin.com", "admin@makquiz.com"]
     if not is_user_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         
     # Get all users (except admins)
-    users_cursor = users_collection.find({"email": {"$nin": ["admin@mentoria.kz", "admin@admin.com", "admin@mentoria.com"]}})
+    users_cursor = users_collection.find({"email": {"$nin": ["admin@makquiz.site", "admin@admin.com", "admin@makquiz.com"]}})
     students = await users_cursor.to_list(length=1000)
     
     total_students = len(students)
