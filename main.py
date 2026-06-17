@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, status, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from database import users_collection, courses_collection, opportunities_collection
 from models import UserCreate, UserLogin, UserResponse, Token, UserSyncData, Course, Opportunity
 from auth import get_password_hash, verify_password, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM
@@ -8,20 +9,9 @@ from bson import ObjectId
 from jose import jwt, JWTError
 from seed_data import COURSES_DATA, OPPORTUNITIES_DATA
 
-app = FastAPI()
-
-# Allow CORS for the frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Startup Seeding
-@app.on_event("startup")
-async def seed_db():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     courses_count = await courses_collection.count_documents({})
     if courses_count == 0:
         await courses_collection.insert_many(COURSES_DATA)
@@ -31,7 +21,7 @@ async def seed_db():
     if ops_count == 0:
         await opportunities_collection.insert_many(OPPORTUNITIES_DATA)
         print("Seeded default opportunities in database.")
-        
+
     admin_user = await users_collection.find_one({"email": "admin@mentoria.kz"})
     if not admin_user:
         hashed_password = get_password_hash("admin123")
@@ -50,6 +40,19 @@ async def seed_db():
             "saved_opportunities": []
         })
         print("Seeded default admin user in database: admin@mentoria.kz / admin123")
+    yield
+    # Shutdown (nothing to do)
+
+app = FastAPI(lifespan=lifespan)
+
+# Allow CORS for the frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Helper to verify token and get current user
 async def get_current_user(authorization: str = Header(None)):
@@ -171,7 +174,7 @@ async def sync_get(user = Depends(get_current_user)):
 async def sync_post(data: UserSyncData, user = Depends(get_current_user)):
     update_data = {}
     if data.profile is not None:
-        update_data["profile"] = data.profile.dict()
+        update_data["profile"] = data.profile.model_dump()
     if data.progress is not None:
         update_data["progress"] = data.progress
     if data.saved_opportunities is not None:

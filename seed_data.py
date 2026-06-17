@@ -119,6 +119,7 @@ COURSES_DATA = [
         "level": "Начальный",
         "icon": "functions",
         "gradient": "from-indigo-500 to-violet-500",
+        "cover": "/courses/1.png",
         "tags": ["Математика", "STEM"],
         "lessonsCount": 4,
         "lessons": [
@@ -235,6 +236,7 @@ COURSES_DATA = [
         "level": "Средний",
         "icon": "language",
         "gradient": "from-sky-500 to-blue-600",
+        "cover": "/courses/2.png",
         "tags": ["Английский язык", "Поступление в университет"],
         "lessonsCount": 4,
         "lessons": [
@@ -366,6 +368,7 @@ COURSES_DATA = [
         "level": "Начальный",
         "icon": "code",
         "gradient": "from-emerald-500 to-teal-600",
+        "cover": "/courses/3.jpg",
         "tags": ["Программирование", "STEM"],
         "lessonsCount": 4,
         "lessons": [

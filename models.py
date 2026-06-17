@@ -20,18 +20,22 @@ class Token(BaseModel):
     token_type: str
     user: UserResponse
 
-# Quiz Schema
-class QuizItem(BaseModel):
-    question: str
-    options: List[str]
-    correct: int
+# Activity schema (flexible - supports read/flashcards/match/quiz)
+class Activity(BaseModel):
+    type: str  # 'read' | 'flashcards' | 'match' | 'quiz'
+    title: str
+    content: Optional[List[Any]] = None      # for 'read'
+    cards: Optional[List[Any]] = None        # for 'flashcards'
+    pairs: Optional[List[Any]] = None        # for 'match'
+    questions: Optional[List[Any]] = None    # for 'quiz'
 
 # Lesson Schema
 class Lesson(BaseModel):
     id: str
     title: str
-    content: List[str]
-    quiz: List[QuizItem]
+    content: Optional[List[str]] = Field(default_factory=list)
+    quiz: Optional[List[Any]] = Field(default_factory=list)
+    activities: Optional[List[Activity]] = Field(default_factory=list)
 
 # Course Schema
 class Course(BaseModel):
@@ -41,16 +45,17 @@ class Course(BaseModel):
     level: str
     icon: str
     gradient: str
+    cover: Optional[str] = None
     tags: List[str]
     lessonsCount: Optional[int] = 4
-    lessons: Optional[List[Lesson]] = []
+    lessons: Optional[List[Lesson]] = Field(default_factory=list)
 
 # Opportunity Schema
 class Opportunity(BaseModel):
     id: str
     title: str
     category: str
-    deadline: str  # YYYY-MM-DD
+    deadline: str
     grades: List[int]
     format: str
     description: str
@@ -61,12 +66,11 @@ class Opportunity(BaseModel):
 class UserProfile(BaseModel):
     name: Optional[str] = ""
     grade: Optional[int] = 8
-    interests: Optional[List[str]] = []
-    goals: Optional[List[str]] = []
+    interests: Optional[List[str]] = Field(default_factory=list)
+    goals: Optional[List[str]] = Field(default_factory=list)
 
 # Full User Sync Payload
 class UserSyncData(BaseModel):
     profile: Optional[UserProfile] = None
-    progress: Optional[Dict[str, Dict[str, bool]]] = {}
-    saved_opportunities: Optional[List[str]] = []
-
+    progress: Optional[Dict[str, Dict[str, bool]]] = Field(default_factory=dict)
+    saved_opportunities: Optional[List[str]] = Field(default_factory=list)
