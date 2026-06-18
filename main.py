@@ -9,12 +9,15 @@ from models import (
 from auth import get_password_hash, verify_password, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM
 from datetime import timedelta, datetime, date
 from bson import ObjectId
+import os
 from jose import jwt, JWTError
 from seed_data import COURSES_DATA, OPPORTUNITIES_DATA
 import asyncio
 import random
 from notifications import send_email, send_telegram
 from telegram_bot import telegram_polling_worker
+
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 
 async def deadline_notifier_loop():
@@ -66,7 +69,7 @@ async def deadline_notifier_loop():
                                 f"Приближается дедлайн по направлению «{op.get('category', 'Возможность')}»!\n"
                                 f"📌 Название: {op.get('title')}\n"
                                 f"📅 Дата дедлайна: {op.get('deadline')} (осталось дней: {days_left})\n\n"
-                                f"Не шали, давай участвуй! Ссылка на платформу: http://localhost:5173/app/opportunities"
+                                f"Не шали, давай участвуй! Ссылка на платформу: {FRONTEND_URL}/app/opportunities"
                             )
                             
                             sent_any = False
@@ -144,11 +147,21 @@ app = FastAPI(lifespan=lifespan)
 # Allow CORS for the frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://makquiz.site",
+        "http://makquiz.site"
+    ],
+    allow_origin_regex="https://.*\\.vercel\\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/")
+async def root():
+    return {"message": "ты че запарил лее, бекенд работает"}
 
 # Helper to verify token and get current user
 async def get_current_user(authorization: str = Header(None)):
@@ -436,7 +449,7 @@ async def sync_post(data: UserSyncData, user = Depends(get_current_user)):
                 
                 if is_completed:
                     user_name = profile.get("name") or latest_user.get("name", "Ученик")
-                    cert_url = f"http://localhost:5173/certificate/{course_id}"
+                    cert_url = f"{FRONTEND_URL}/certificate/{course_id}"
                     
                     msg_text = (
                         f"🎓 Поздравляем, {user_name}!\n\n"

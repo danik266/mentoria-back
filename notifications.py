@@ -69,6 +69,41 @@ async def send_email(to_email: str, subject: str, body: str):
         print(f"\n[EMAIL MOCK SEND] to={to_email}\nSubject: {subject}\nBody:\n{body}\n")
         return True
         
+    # If using Resend, prefer their HTTPS REST API over SMTP to bypass cloud provider port blocks
+    if smtp_host and "resend.com" in smtp_host.lower() and password.startswith("re_"):
+        try:
+            url = "https://api.resend.com/emails"
+            headers = {
+                "Authorization": f"Bearer {password}",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            payload = {
+                "from": from_email,
+                "to": to_email,
+                "subject": subject,
+                "text": body
+            }
+            data_bytes = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
+            
+            def _api_call():
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    return json.loads(response.read().decode("utf-8"))
+                    
+            res = await asyncio.to_thread(_api_call)
+            print(f"[Email Send] Successfully sent email via Resend API to {to_email}: {res}")
+            return True
+        except Exception as e:
+            if hasattr(e, "read"):
+                try:
+                    error_details = e.read().decode("utf-8")
+                    print(f"[Email Send Error] Resend API detail: {error_details}")
+                except:
+                    pass
+            print(f"[Email Send Error] Failed to send email via Resend API to {to_email}: {e}")
+            print("[Email Send] Falling back to SMTP...")
+            
     smtp_port = int(smtp_port_str) if smtp_port_str else 587
     try:
         await asyncio.to_thread(
