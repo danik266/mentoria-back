@@ -214,10 +214,10 @@ async def register_user(user: UserCreate):
     await users_collection.insert_one(new_user)
     
     # Send confirmation code email
-    subject = "Код подтверждения регистрации на Makquiz Hub"
+    subject = "Код подтверждения регистрации на Mentoria Hub"
     body = (
         f"👋 Привет, {user.name}!\n\n"
-        f"Спасибо за регистрацию на образовательной платформе Makquiz Hub.\n"
+        f"Спасибо за регистрацию на образовательной платформе Mentoria Hub.\n"
         f"Ваш код подтверждения почты:\n\n"
         f"👉  {confirm_code}  👈\n\n"
         f"Введите его на странице верификации, чтобы активировать аккаунт.\n"
@@ -284,7 +284,7 @@ async def resend_confirmation(payload: ForgotPasswordRequest):
         {"$set": {"confirm_code": new_code}}
     )
     
-    subject = "Новый код подтверждения — Makquiz Hub"
+    subject = "Новый код подтверждения — Mentoria Hub"
     body = (
         f"Ваш новый код подтверждения почты:\n\n"
         f"👉  {new_code}  👈\n\n"
@@ -306,10 +306,10 @@ async def forgot_password(payload: ForgotPasswordRequest):
         {"$set": {"reset_code": reset_code}}
     )
     
-    subject = "Код для сброса пароля — Makquiz Hub"
+    subject = "Код для сброса пароля — Mentoria Hub"
     body = (
         f"Здравствуйте!\n\n"
-        f"Мы получили запрос на сброс пароля для вашей учетной записи Makquiz Hub.\n"
+        f"Мы получили запрос на сброс пароля для вашей учетной записи Mentoria Hub.\n"
         f"Ваш одноразовый код для восстановления доступа:\n\n"
         f"👉  {reset_code}  👈\n\n"
         f"Если вы не запрашивали сброс пароля, проигнорируйте это письмо."
@@ -337,10 +337,10 @@ async def reset_password(payload: ResetPasswordRequest):
     )
     
     # Notify user that password was changed
-    subject = "Пароль успешно изменен — Makquiz Hub"
+    subject = "Пароль успешно изменен — Mentoria Hub"
     body = (
         f"Уважаемый пользователь!\n\n"
-        f"Пароль для вашей учетной записи {payload.email} на Makquiz Hub был успешно изменен.\n"
+        f"Пароль для вашей учетной записи {payload.email} на Mentoria Hub был успешно изменен.\n"
         f"Если вы этого не делали, немедленно свяжитесь с поддержкой."
     )
     await send_email(to_email=user["email"], subject=subject, body=body)
@@ -456,7 +456,7 @@ async def sync_post(data: UserSyncData, user = Depends(get_current_user)):
                         f"Вы успешно завершили курс «{course.get('title')}»!\n"
                         f"За ваши успехи и старания вам сгенерирован именной сертификат.\n\n"
                         f"Посмотреть и скачать сертификат можно по ссылке:\n{cert_url}\n\n"
-                        f"Так держать! Продолжайте обучение на Makquiz Hub!"
+                        f"Так держать! Продолжайте обучение на Mentoria Hub!"
                     )
                     
                     email_enabled = profile.get("email_certs", True)

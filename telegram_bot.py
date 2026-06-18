@@ -123,7 +123,7 @@ async def telegram_polling_worker():
                     user_name = user.get("profile", {}).get("name", user.get("name", "Ученик"))
                     welcome_msg = (
                         f"🎉 Привет, {user_name}!\n\n"
-                        f"Ваш Telegram-аккаунт успешно подключен к платформе Makquiz Hub.\n"
+                        f"Ваш Telegram-аккаунт успешно подключен к платформе Mentoria Hub.\n"
                         f"Теперь вы будете получать уведомления о дедлайнах и сертификатах прямо сюда!"
                     )
                     ok = await send_telegram(chat_id, welcome_msg)
@@ -132,7 +132,7 @@ async def telegram_polling_worker():
                     print(f"[Telegram Bot] No matching user found in DB for message.")
                     if text.startswith("/start"):
                         instructions = (
-                            "👋 Добро пожаловать в Makquiz Hub Bot!\n\n"
+                            "👋 Добро пожаловать в Mentoria Hub Bot!\n\n"
                             "Чтобы связать этот аккаунт со своим профилем на платформе:\n"
                             "1. Перейдите в настройки профиля на сайте.\n"
                             "2. Укажите ваше имя пользователя Telegram (username).\n"
