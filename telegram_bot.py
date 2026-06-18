@@ -6,7 +6,7 @@ import json
 from database import users_collection
 from notifications import send_telegram
 
-BOT_USERNAME = "makquizhub_bot"
+BOT_USERNAME = "mentoriahubkz_bot"
 
 def get_bot_username():
     return BOT_USERNAME
